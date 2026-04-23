@@ -3,5 +3,3 @@ bcrypt
 PyJWT
 cryptography
 python-dotenv
-psutil
-cffi
