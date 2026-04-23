@@ -1,8 +1,7 @@
 websockets
 bcrypt
-pyjwt
+PyJWT
 cryptography
-watchdog
 python-dotenv
-cffi
 psutil
+cffi
