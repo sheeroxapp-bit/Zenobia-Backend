@@ -6,7 +6,7 @@ import logging
 import threading
 import uuid
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List
 from config import Config
 from models.ai_model import AIModel
@@ -106,6 +106,10 @@ c_module = ffi.verify("""
     int multiply_numbers(int a, int b);
 """, libraries=["zenobia_c"])
 
+# Initialize models
+ai_model = AIModel()
+observer = Observer()
+
 class NewDataHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
@@ -177,4 +181,157 @@ class GroupManager:
     def __init__(self):
         self.groups = {}  # Store group information
         self.group_agents = {}  # Store agents for each group
-        self.root_agents
+        self.root_agents = {}  # Store root agent information
+        self.user_groups = {}  # Store user-group relationships
+        
+    def create_group(self, group_id: str, owner_id: str) -> bool:
+        """Create a new group."""
+        if group_id in self.groups:
+            return False
+            
+        self.groups[group_id] = {
+            'owner': owner_id,
+            'members': [],
+            'agents': []
+        }
+        return True
+        
+    def join_group(self, user_id: str, group_id: str) -> bool:
+        """Join a group."""
+        if group_id not in self.groups:
+            return False
+            
+        if user_id not in self.groups[group_id]['members']:
+            self.groups[group_id]['members'].append(user_id)
+            self.user_groups[user_id] = group_id
+        return True
+        
+    def leave_group(self, user_id: str, group_id: str) -> bool:
+        """Leave a group."""
+        if group_id not in self.groups:
+            return False
+            
+        if user_id in self.groups[group_id]['members']:
+            self.groups[group_id]['members'].remove(user_id)
+            if user_id in self.user_groups:
+                del self.user_groups[user_id]
+        return True
+        
+    def is_owner(self, user_id: str, group_id: str) -> bool:
+        """Check if user is owner of group."""
+        if group_id not in self.groups:
+            return False
+        return self.groups[group_id]['owner'] == user_id
+        
+    def get_group_members(self, group_id: str) -> List[str]:
+        """Get list of group members."""
+        if group_id not in self.groups:
+            return []
+        return self.groups[group_id]['members']
+        
+    def add_agent_to_group(self, agent_id: str, group_id: str) -> bool:
+        """Add agent to group."""
+        if group_id not in self.groups:
+            return False
+            
+        if agent_id not in self.groups[group_id]['agents']:
+            self.groups[group_id]['agents'].append(agent_id)
+        return True
+        
+    def remove_agent_from_group(self, agent_id: str, group_id: str) -> bool:
+        """Remove agent from group."""
+        if group_id not in self.groups:
+            return False
+            
+        if agent_id in self.groups[group_id]['agents']:
+            self.groups[group_id]['agents'].remove(agent_id)
+        return True
+
+# Initialize components
+auth_handler = AuthHandler()
+group_manager = GroupManager()
+
+# Start watchdog observer
+observer.schedule(NewDataHandler(), SANDBOX_DIR, recursive=True)
+observer.start()
+
+async def handle_client(websocket, path):
+    """Handle incoming WebSocket connections."""
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                action = data.get('action')
+                
+                if action == 'chat':
+                    # Process chat message
+                    text = data.get('text', '')
+                    response = ai_model.generate_response(text)
+                    await websocket.send(json.dumps({
+                        'action': 'chat',
+                        'data': response
+                    }))
+                    
+                elif action == 'login':
+                    # Handle login
+                    user_id = data.get('user_id', '')
+                    password = data.get('password', '')
+                    
+                    if auth_handler.authenticate_user(user_id, password):
+                        token = auth_handler.generate_auth_token(user_id)
+                        await websocket.send(json.dumps({
+                            'action': 'login_success',
+                            'token': token
+                        }))
+                    else:
+                        await websocket.send(json.dumps({
+                            'action': 'login_error',
+                            'error': 'Invalid credentials'
+                        }))
+                        
+                elif action == 'register':
+                    # Handle registration
+                    user_id = data.get('user_id', '')
+                    password = data.get('password', '')
+                    
+                    if auth_handler.register_user(user_id, password):
+                        await websocket.send(json.dumps({
+                            'action': 'register_success'
+                        }))
+                    else:
+                        await websocket.send(json.dumps({
+                            'action': 'register_error',
+                            'error': 'Registration failed'
+                        }))
+                        
+            except Exception as e:
+                logger.error(f"Error processing message: {str(e)}")
+                await websocket.send(json.dumps({
+                    'action': 'error',
+                    'error': str(e)
+                }))
+    except Exception as e:
+        logger.error(f"WebSocket error: {str(e)}")
+    finally:
+        observer.stop()
+        observer.join()
+
+async def main():
+    """Main server loop."""
+    server = await websockets.serve(
+        handle_client,
+        "0.0.0.0",
+        8765,
+        ssl=None
+    )
+    
+    logger.info("Server started on port 8765")
+    await server.wait_closed()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Server shutting down...")
+    except Exception as e:
+        logger.error(f"Server error: {str(e)}")
